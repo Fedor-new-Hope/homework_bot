@@ -3,6 +3,7 @@ import logging
 import os
 import time
 from http import HTTPStatus
+from logging import StreamHandler
 from urllib.error import HTTPError
 
 import requests
@@ -11,19 +12,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    filename='Bot.log',
-    encoding="utf-8",
-    filemode='a',
-    format='%(asctime)s, %(levelname)s, %(message)s, %(name)s'
-)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 PRACTICUM_TOKEN = os.getenv('PRACT_TOKEN')
 TELEGRAM_TOKEN = os.getenv('TEL_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('CHAT_ID')
+TOKENS = ('PRACTICUM_TOKEN', 'TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID')
 
 RETRY_PERIOD = 600
 ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
@@ -36,45 +31,74 @@ HOMEWORK_VERDICTS = {
     'rejected': 'Работа проверена: у ревьюера есть замечания.'
 }
 
+TOKENS_ERROR = 'Отсутствует токен {name}'
+INFO_API_START = 'Проверка ответа от API...'
+API_ERROR_REQUEST = 'Ощибка при запросе:{payload} к API: {error}.'
+API_ERROR_CONNECT = 'Ошибка соединения {error}'
+API_ERROR_TIME = 'Время ожидания превышено {error}'
+API_ERROR_HTTP = 'API не отвечает: {response.status_code}'
+INFO_API_CHECK_START = 'Начало проверки ответа сервера'
+API_ERROR_DICT = 'response не является словарём'
+API_ERROR_KEY = 'Нет ключа: homeworks'
+API_ERROR_LIST = 'homeworks не список'
+INFO_SEND_MESSAGE = ('Начало отправки сообщения, '
+                     'со статусом домашней работы: {message}')
+SEND_MESSAGE_ERROR = 'Не удалось отправить сообщение: {error}'
+SEND_MESSAGE_DONE = 'Сообщение отправленно!'
+
+
+class APIError(Exception):
+    """Ошибка API."""
+
+    pass
+
 
 def check_tokens():
     """Функция проверки наличия переменных окружения."""
-    if not TELEGRAM_CHAT_ID or not TELEGRAM_TOKEN:
-        logger.critical('Отцутствует токен.')
-        return False
-    if not PRACTICUM_TOKEN:
-        raise SystemError('Отцутствует токен')
-
+    for name in TOKENS:
+        if globals()[name] is None:
+            logger.critical(TOKENS_ERROR.format(name=name))
+            raise SystemError(TOKENS_ERROR.format(name=name))
     return True
 
 
 def get_api_answer(timestamp):
     """Функция делает запрос  API-сервиса."""
-    logger.info('Проверка ответа от API...')
-    timestamp = int(time.time())
+    logger.info(INFO_API_START)
     payload = {'from_date': timestamp}
     try:
         response = requests.get(ENDPOINT, headers=HEADERS, params=payload)
-    except Exception as error:
-        raise f'Ощибка при запросе:{payload} к API: {error}.'
+
+    except requests.exceptions.Timeout as error:
+        raise API_ERROR_TIME.format(error=error)
+
+    except requests.exceptions.ConnectionError as error:
+        raise API_ERROR_CONNECT.format(error=error)
+
+    except requests.exceptions.RequestException as error:
+        raise (API_ERROR_REQUEST.format(payload=payload, error=error))
+
     if response.status_code != HTTPStatus.OK:
-        raise HTTPError(f'API не отвечает: {response.status_code}')
+        raise HTTPError(
+            API_ERROR_HTTP.format(response.status_code))
     return response.json()
 
 
 def check_response(response):
     """Проверка ответа API."""
-    logger.info('Начало проверки ответа сервера')
+    logger.info(INFO_API_CHECK_START)
     if not isinstance(response, dict):
         logger.error('Тип данных ответа API не является словарём')
-        raise TypeError('response is not dict')
+        raise TypeError(API_ERROR_DICT)
+    # pytest требует TypeError, APIError не проходит
     if 'homeworks' not in response:
-        logger.error('Нет ключа homeworks')
-        raise KeyError('KeyError homeworks')
+        logger.error('Нет ключа: homeworks')
+        raise APIError(API_ERROR_KEY)
     if not isinstance(response.get('homeworks'), list):
         logger.error('homeworks не список')
-        raise TypeError('homeworks is not list')
-    return response['homeworks']
+        raise TypeError(API_ERROR_LIST)
+    # pytest требует TypeError, APIError не проходит
+    return response.get('homeworks')
 
 
 def parse_status(homework):
@@ -96,14 +120,13 @@ def parse_status(homework):
 def send_message(bot, message):
     """Функция отправляет сообщение в Telegram чат."""
     try:
-        logger.info(f'Начало отправки сообщения со статусом '
-                    f'домашней работы: {message}')
+        logger.info(INFO_SEND_MESSAGE.format(message=message))
         bot.send_message(TELEGRAM_CHAT_ID, message)
-    except Exception as error:
-        logger.error(f'Не удалось отправить сообщение: {error}')
+    except telegram.TelegramError as error:           # !!!!
+        logger.error(SEND_MESSAGE_ERROR.format(error=error))
     else:
-        logger.debug('Сообщение отправленно!')
-    return True
+        logger.debug(SEND_MESSAGE_DONE)
+    return
 
 
 def main():
@@ -111,10 +134,11 @@ def main():
     if not check_tokens():
         exit()
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
-    timestamp = int(time.time())
+    timestamp = 0
     while True:
         try:
             response = get_api_answer(timestamp)
+            timestamp = response['current_date']
             homework = check_response(response)[0]
             message = parse_status(homework)
             if message is not None:
@@ -132,4 +156,18 @@ def main():
 
 
 if __name__ == '__main__':
+    logging.basicConfig(
+        level=logging.DEBUG,
+        filename=__file__ + '.log',
+        encoding="utf-8",
+        filemode='a',
+        format='%(asctime)s, %(levelname)s, %(message)s, %(name)s'
+    )
+    handler = StreamHandler()
+    logger.addHandler(handler)
+    formatter = logging.Formatter(
+        '%(asctime)s, %(levelname)s, %(message)s, %(name)s'
+    )
+    handler.setFormatter(formatter)
+
     main()
