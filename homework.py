@@ -31,7 +31,8 @@ HOMEWORK_VERDICTS = {
     'rejected': 'Работа проверена: у ревьюера есть замечания.'
 }
 
-TOKENS_ERROR = 'Отсутствует токен {name}'
+TOKEN_ERROR = 'Отсутствует токен {name}'
+TOKENS_ERROR = 'Отсутствует токены {no_tokens}'
 INFO_API_START = 'Проверка ответа от API...'
 API_ERROR_REQUEST = 'Ощибка при запросе:{payload} к API: {error}.'
 API_ERROR_CONNECT = 'Ошибка соединения {error}'
@@ -50,15 +51,17 @@ SEND_MESSAGE_DONE = 'Сообщение отправленно!'
 class APIError(Exception):
     """Ошибка API."""
 
-    pass
-
 
 def check_tokens():
     """Функция проверки наличия переменных окружения."""
+    no_tokens = []
     for name in TOKENS:
         if globals()[name] is None:
-            logger.critical(TOKENS_ERROR.format(name=name))
-            raise SystemError(TOKENS_ERROR.format(name=name))
+            logger.critical(TOKEN_ERROR.format(name=name))
+            no_tokens.append(name)
+    if no_tokens != []:
+        raise SystemError(TOKENS_ERROR.format(no_tokens=no_tokens))
+
     return True
 
 
@@ -70,13 +73,16 @@ def get_api_answer(timestamp):
         response = requests.get(ENDPOINT, headers=HEADERS, params=payload)
 
     except requests.exceptions.Timeout as error:
-        raise API_ERROR_TIME.format(error=error)
+        raise requests.exceptions.Timeout(
+            API_ERROR_TIME.format(error=error))
 
     except requests.exceptions.ConnectionError as error:
-        raise API_ERROR_CONNECT.format(error=error)
+        raise requests.exceptions.ConnectionError(
+            API_ERROR_CONNECT.format(error=error))
 
     except requests.exceptions.RequestException as error:
-        raise (API_ERROR_REQUEST.format(payload=payload, error=error))
+        raise ConnectionError(
+            API_ERROR_REQUEST.format(payload=payload, error=error))
 
     if response.status_code != HTTPStatus.OK:
         raise HTTPError(
@@ -90,14 +96,15 @@ def check_response(response):
     if not isinstance(response, dict):
         logger.error('Тип данных ответа API не является словарём')
         raise TypeError(API_ERROR_DICT)
-    # pytest требует TypeError, APIError не проходит
+
     if 'homeworks' not in response:
         logger.error('Нет ключа: homeworks')
         raise APIError(API_ERROR_KEY)
+
     if not isinstance(response.get('homeworks'), list):
         logger.error('homeworks не список')
         raise TypeError(API_ERROR_LIST)
-    # pytest требует TypeError, APIError не проходит
+
     return response.get('homeworks')
 
 
@@ -126,7 +133,6 @@ def send_message(bot, message):
         logger.error(SEND_MESSAGE_ERROR.format(error=error))
     else:
         logger.debug(SEND_MESSAGE_DONE)
-    return
 
 
 def main():
@@ -134,7 +140,8 @@ def main():
     if not check_tokens():
         exit()
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
-    timestamp = 0
+    timestamp = int(time.time() - 604800)
+
     while True:
         try:
             response = get_api_answer(timestamp)
