@@ -46,6 +46,7 @@ INFO_SEND_MESSAGE = ('Начало отправки сообщения, '
                      'со статусом домашней работы: {message}')
 SEND_MESSAGE_ERROR = 'Не удалось отправить сообщение: {error}'
 SEND_MESSAGE_DONE = 'Сообщение отправленно!'
+SLEEP_MODE = 'Режим ожидания'
 
 
 class APIError(Exception):
@@ -140,11 +141,11 @@ def main():
     if not check_tokens():
         exit()
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
-    timestamp = int(time.time() - 604800)
-
+    timestamp = int(time.time())
+    empty_message = ''
     while True:
         try:
-            response = get_api_answer(timestamp)
+            response = get_api_answer(timestamp=timestamp)
             timestamp = response['current_date']
             homework = check_response(response)[0]
             message = parse_status(homework)
@@ -155,10 +156,12 @@ def main():
                 send_message(bot, message)
 
         except Exception as error:
-            message = f'Сбой в работе программы: {error}'
-            logging.error(message)
-            bot.send_message(TELEGRAM_CHAT_ID, message)
+            if error != empty_message:
+                message = f'Сбой в работе программы: {error}'
+                logging.error(message)
+                bot.send_message(TELEGRAM_CHAT_ID, message)
         finally:
+            logger.info(SLEEP_MODE)
             time.sleep(RETRY_PERIOD)
 
 
